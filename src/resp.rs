@@ -25,6 +25,12 @@ fn binary_extract_line(buffer: &[u8], index: &mut usize) -> RESPResult<Vec<u8>> 
     Ok(Vec::from(&buffer[start_index..*index - 2]))
 }
 
+pub fn binary_extract_line_as_string(buffer: &[u8], index: &mut usize) -> RESPResult<String> {
+    let line = binary_extract_line(buffer, index)?;
+
+    Ok(String::from_utf8(line)?)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::resp_result::RESPError;
@@ -116,5 +122,26 @@ mod tests {
             }
             _ => panic!(),
         }
+    }
+
+    #[test]
+    fn test_binary_extract_line_as_string() {
+        let buffer = "OK\r\n".as_bytes();
+        let mut index: usize = 0;
+
+        let output = binary_extract_line_as_string(buffer, &mut index).unwrap();
+
+        assert_eq!(output, String::from("OK"));
+        assert_eq!(index, 4);
+    }
+
+    #[test]
+    fn test_binary_extact_line_as_string_invalid_utf8() {
+        let buffer: Vec<u8> = vec![0xFF, 0xFE, b'\r', b'\n'];
+        let mut index: usize = 0;
+
+        let error = binary_extract_line_as_string(&buffer, &mut index).unwrap_err();
+
+        assert_eq!(error, RESPError::FromUtf8);
     }
 }
