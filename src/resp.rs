@@ -1,4 +1,20 @@
 use crate::resp_result::{RESPError, RESPResult};
+use std::fmt;
+
+#[derive(Debug, PartialEq)]
+pub enum RESP {
+    SimpleString(String),
+}
+
+impl fmt::Display for RESP {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let data = match self {
+            Self::SimpleString(data) => format!("+{}\r\n", data),
+        };
+
+        write!(f, "{}", data)
+    }
+}
 
 fn binary_extract_line(buffer: &[u8], index: &mut usize) -> RESPResult<Vec<u8>> {
     if *index >= buffer.len() {
@@ -29,6 +45,24 @@ pub fn binary_extract_line_as_string(buffer: &[u8], index: &mut usize) -> RESPRe
     let line = binary_extract_line(buffer, index)?;
 
     Ok(String::from_utf8(line)?)
+}
+
+pub fn resp_remove_type(value: char, buffer: &[u8], index: &mut usize) -> RESPResult<()> {
+    if buffer[*index] != value as u8 {
+        return Err(RESPError::WrongType);
+    }
+
+    *index += 1;
+
+    Ok(())
+}
+
+fn parse_simple_string(buffer: &[u8], index: &mut usize) -> RESPResult<RESP> {
+    resp_remove_type('+', buffer, index)?;
+
+    let line: String = binary_extract_line_as_string(buffer, index)?;
+
+    Ok(RESP::SimpleString(line))
 }
 
 #[cfg(test)]
@@ -143,5 +177,37 @@ mod tests {
         let error = binary_extract_line_as_string(&buffer, &mut index).unwrap_err();
 
         assert_eq!(error, RESPError::FromUtf8);
+    }
+
+    #[test]
+    fn test_resp_remove_type() {
+        let buffer = "+OK\r\n".as_bytes();
+        let mut index: usize = 0;
+
+        resp_remove_type('+', buffer, &mut index).unwrap();
+
+        assert_eq!(index, 1);
+    }
+
+    #[test]
+    fn test_resp_remove_type_error() {
+        let buffer = "*OK\r\n".as_bytes();
+        let mut index: usize = 0;
+
+        let error = resp_remove_type('+', buffer, &mut index).unwrap_err();
+
+        assert_eq!(index, 0);
+        assert_eq!(error, RESPError::WrongType);
+    }
+
+    #[test]
+    fn test_parse_simple_string() {
+        let buffer = "+OK\r\n".as_bytes();
+        let mut index: usize = 0;
+
+        let output = parse_simple_string(buffer, &mut index).unwrap();
+
+        assert_eq!(output, RESP::SimpleString(String::from("OK")));
+        assert_eq!(index, 5);
     }
 }
