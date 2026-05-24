@@ -1,3 +1,5 @@
+// Finished up and till 2.10
+
 use crate::resp_result::{RESPError, RESPResult};
 use std::fmt;
 
@@ -63,6 +65,40 @@ fn parse_simple_string(buffer: &[u8], index: &mut usize) -> RESPResult<RESP> {
     let line: String = binary_extract_line_as_string(buffer, index)?;
 
     Ok(RESP::SimpleString(line))
+}
+
+fn parser_router(
+    buffer: &[u8],
+    index: &mut usize,
+) -> Option<fn(&[u8], &mut usize) -> RESPResult<RESP>> {
+    match buffer[*index] {
+        b'+' => Some(parse_simple_string),
+        _ => None,
+    }
+}
+
+pub fn bytes_to_resp(buffer: &[u8], index: &mut usize) -> RESPResult<RESP> {
+    match parser_router(buffer, index) {
+        Some(parse_func) => {
+            let result: RESP = parse_func(buffer, index)?;
+            Ok(result)
+        }
+        None => Err(RESPError::Unknown),
+    }
+}
+
+fn binary_extract_bytes(buffer: &[u8], index: &mut usize, length: usize) -> RESPResult<Vec<u8>> {
+    let mut output = Vec::new();
+
+    if *index + length > buffer.len() {
+        return Err(RESPError::OutOfBounds(buffer.len()));
+    }
+
+    output.extend_from_slice(&buffer[*index..*index + length]);
+
+    *index += length;
+
+    Ok(output)
 }
 
 #[cfg(test)]
@@ -209,5 +245,49 @@ mod tests {
 
         assert_eq!(output, RESP::SimpleString(String::from("OK")));
         assert_eq!(index, 5);
+    }
+
+    #[test]
+    fn test_bytes_to_resp_simple_string() {
+        let buffer = "+OK\r\n".as_bytes();
+        let mut index: usize = 0;
+
+        let output = bytes_to_resp(buffer, &mut index).unwrap();
+
+        assert_eq!(output, RESP::SimpleString(String::from("OK")));
+        assert_eq!(index, 5);
+    }
+
+    #[test]
+    fn test_byte_to_resp_unknown() {
+        let buffer = "?OK\r\n".as_bytes();
+        let mut index: usize = 0;
+
+        let error = bytes_to_resp(buffer, &mut index).unwrap_err();
+
+        assert_eq!(error, RESPError::Unknown);
+        assert_eq!(index, 0);
+    }
+
+    #[test]
+    fn test_binary_extract_bytes() {
+        let buffer = "SOMEBYTES".as_bytes();
+        let mut index: usize = 0;
+
+        let output = binary_extract_bytes(buffer, &mut index, 6).unwrap();
+
+        assert_eq!(output, "SOMEBY".as_bytes().to_vec());
+        assert_eq!(index, 6);
+    }
+
+    #[test]
+    fn test_binary_extract_bytes_out_of_bounds() {
+        let buffer = "SOMEBYTES".as_bytes();
+        let mut index: usize = 0;
+
+        let error = binary_extract_bytes(buffer, &mut index, 10).unwrap_err();
+
+        assert_eq!(error, RESPError::OutOfBounds(9));
+        assert_eq!(index, 0)
     }
 }
