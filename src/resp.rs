@@ -1,16 +1,20 @@
-// Finished up and till 2.10
+// Finished up and till 2.11
 
-use crate::resp_result::{RESPError, RESPResult};
+use crate::resp_result::{RESPError, RESPLength, RESPResult};
 use std::fmt;
 
 #[derive(Debug, PartialEq)]
 pub enum RESP {
+    BulkString(String),
+    Null,
     SimpleString(String),
 }
 
 impl fmt::Display for RESP {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let data = match self {
+            Self::BulkString(data) => format!("${}\r\n{}\r\n", data.len(), data),
+            Self::Null => String::from("$-1\r\n"),
             Self::SimpleString(data) => format!("+{}\r\n", data),
         };
 
@@ -73,6 +77,7 @@ fn parser_router(
 ) -> Option<fn(&[u8], &mut usize) -> RESPResult<RESP>> {
     match buffer[*index] {
         b'+' => Some(parse_simple_string),
+        b'$' => Some(parse_bulk_string),
         _ => None,
     }
 }
@@ -99,6 +104,36 @@ fn binary_extract_bytes(buffer: &[u8], index: &mut usize, length: usize) -> RESP
     *index += length;
 
     Ok(output)
+}
+
+pub fn resp_extract_length(buffer: &[u8], index: &mut usize) -> RESPResult<RESPLength> {
+    let line: String = binary_extract_line_as_string(buffer, index)?;
+
+    let length: RESPLength = line.parse()?;
+
+    Ok(length)
+}
+
+fn parse_bulk_string(buffer: &[u8], index: &mut usize) -> RESPResult<RESP> {
+    resp_remove_type('$', buffer, index)?;
+
+    let length = resp_extract_length(buffer, index)?;
+
+    if length == -1 {
+        return Ok(RESP::Null);
+    }
+
+    if length < -1 {
+        return Err(RESPError::IncorrectLength(length));
+    }
+
+    let bytes = binary_extract_bytes(buffer, index, length as usize)?;
+
+    let data = String::from_utf8(bytes)?;
+
+    *index += 2;
+
+    Ok(RESP::BulkString(data))
 }
 
 #[cfg(test)]
@@ -289,5 +324,71 @@ mod tests {
 
         assert_eq!(error, RESPError::OutOfBounds(9));
         assert_eq!(index, 0)
+    }
+
+    #[test]
+    fn test_parse_bulk_string() {
+        let buffer = "$2\r\nOK\r\n".as_bytes();
+        let mut index: usize = 0;
+
+        let output = parse_bulk_string(buffer, &mut index).unwrap();
+
+        assert_eq!(output, RESP::BulkString(String::from("OK")));
+        assert_eq!(index, 8);
+    }
+
+    #[test]
+    fn test_parse_bulk_string_empty() {
+        let buffer = "$-1\r\n".as_bytes();
+        let mut index: usize = 0;
+
+        let output = parse_bulk_string(buffer, &mut index).unwrap();
+
+        assert_eq!(output, RESP::Null);
+        assert_eq!(index, 5);
+    }
+
+    #[test]
+    fn test_parse_bulk_string_unparsable_length() {
+        let buffer = "$wrong\r\nOK\r\n".as_bytes();
+        let mut index: usize = 0;
+
+        let error = parse_bulk_string(buffer, &mut index).unwrap_err();
+
+        assert_eq!(error, RESPError::ParseInt);
+        assert_eq!(index, 8);
+    }
+
+    #[test]
+    fn test_parse_bulk_string_negative_length() {
+        let buffer = "$-7\r\nOK\r\n".as_bytes();
+        let mut index: usize = 0;
+
+        let error = parse_bulk_string(buffer, &mut index).unwrap_err();
+
+        assert_eq!(error, RESPError::IncorrectLength(-7));
+        assert_eq!(index, 5);
+    }
+
+    #[test]
+    fn test_parse_bulk_string_too_short() {
+        let buffer = "$7\r\nOK\r\n".as_bytes();
+        let mut index: usize = 0;
+
+        let error = parse_bulk_string(buffer, &mut index).unwrap_err();
+
+        assert_eq!(error, RESPError::OutOfBounds(8));
+        assert_eq!(index, 4);
+    }
+
+    #[test]
+    fn test_bytes_to_resp_bulk_string() {
+        let buffer = "$2\r\nOK\r\n".as_bytes();
+        let mut index: usize = 0;
+
+        let output = bytes_to_resp(buffer, &mut index).unwrap();
+
+        assert_eq!(output, RESP::BulkString(String::from("OK")));
+        assert_eq!(index, 8);
     }
 }
