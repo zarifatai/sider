@@ -1,5 +1,9 @@
+// Completed till 3.2
+
 use crate::resp::{RESP, bytes_to_resp};
 use crate::server::process_request;
+use crate::storage::Storage;
+use std::sync::{Arc, Mutex};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -17,13 +21,16 @@ async fn main() -> std::io::Result<()> {
     // standard Redis port.
     let listener = TcpListener::bind("127.0.0.1:6379").await?;
 
+    // Create a storage and protect it against concurrency issues.
+    let storage = Arc::new(Mutex::new(Storage::new()));
+
     loop {
         // Process each incoming connection.
         match listener.accept().await {
             // The connection is valid, handle it.
             Ok((stream, _)) => {
                 // Spawn a task to take care of this connection.
-                tokio::spawn(handle_connection(stream));
+                tokio::spawn(handle_connection(stream, storage.clone()));
             }
             Err(e) => {
                 println!("Error: {}", e);
@@ -34,7 +41,7 @@ async fn main() -> std::io::Result<()> {
 }
 
 // The main entry point for valid TCP connections
-async fn handle_connection(mut stream: TcpStream) {
+async fn handle_connection(mut stream: TcpStream, storage: Arc<Mutex<Storage>>) {
     // Create a buffer to host incoming data.
     let mut buffer = [0; 512];
 
@@ -55,7 +62,7 @@ async fn handle_connection(mut stream: TcpStream) {
                     }
                 };
 
-                let response = match process_request(request) {
+                let response = match process_request(request, storage.clone()) {
                     Ok(v) => v,
                     Err(e) => {
                         eprintln!("Error parsing command: {}", e);
