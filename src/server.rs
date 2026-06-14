@@ -1,13 +1,15 @@
 use crate::RESP;
+use crate::connection::ConnectionMessage;
+use crate::request::Request;
 use crate::storage::Storage;
-use crate::storage_result::{StorageError, StorageResult};
-use std::sync::{Arc, Mutex};
+use tokio::sync::mpsc;
 
-pub fn process_request(request: RESP, storage: Arc<Mutex<Storage>>) -> StorageResult<RESP> {
-    let elements = match request {
+// pub fn process_request(request: Request, storage: Arc<Mutex<Storage>>) -> StorageResult<RESP> {
+pub async fn process_request(request: Request, server: &mut Server) {
+    let elements = match &request.value {
         RESP::Array(v) => v,
         _ => {
-            return Err(StorageError::IncorrectRequest);
+            panic!()
         }
     };
 
@@ -17,16 +19,45 @@ pub fn process_request(request: RESP, storage: Arc<Mutex<Storage>>) -> StorageRe
         match elem {
             RESP::BulkString(v) => command.push(v.clone()),
             _ => {
-                return Err(StorageError::IncorrectRequest);
+                panic!()
             }
         }
     }
 
-    let mut guard = storage.lock().unwrap();
+    let storage = match server.storage.as_mut() {
+        Some(storage) => storage,
+        None => panic!(),
+    };
 
-    let response = guard.process_command(&command);
+    let _response = storage.process_command(&command);
+}
 
-    response
+pub struct Server {
+    pub storage: Option<Storage>,
+}
+
+impl Server {
+    pub fn new() -> Self {
+        Self { storage: None }
+    }
+
+    pub fn set_storage(&mut self, storage: Storage) {
+        self.storage = Some(storage);
+    }
+}
+
+pub async fn run_server(mut server: Server, mut crx: mpsc::Receiver<ConnectionMessage>) {
+    loop {
+        tokio::select! {
+            Some(message) = crx.recv() => {
+                match message {
+                    ConnectionMessage::Request(request) => {
+                        process_request(request, &mut server).await
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -34,45 +65,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_process_request_ping() {
-        let request = RESP::Array(vec![RESP::BulkString(String::from("PING"))]);
-        let storage = Arc::new(Mutex::new(Storage::new()));
+    fn test_create_new() {
+        let server: Server = Server::new();
 
-        let output = process_request(request, storage).unwrap();
-
-        assert_eq!(output, RESP::SimpleString(String::from("PONG")));
+        match server.storage {
+            Some(_) => panic!(),
+            None => (),
+        };
     }
 
     #[test]
-    fn test_process_request_not_array() {
-        let request = RESP::BulkString(String::from("PING"));
-        let storage = Arc::new(Mutex::new(Storage::new()));
+    fn test_set_storage() {
+        let storage = Storage::new();
 
-        let error = process_request(request, storage).unwrap_err();
+        let mut server: Server = Server::new();
+        server.set_storage(storage);
 
-        assert_eq!(error, StorageError::IncorrectRequest);
-    }
-
-    #[test]
-    fn test_process_request_not_bulkstrings() {
-        let request = RESP::Array(vec![RESP::SimpleString(String::from("PING"))]);
-        let storage = Arc::new(Mutex::new(Storage::new()));
-
-        let error = process_request(request, storage).unwrap_err();
-
-        assert_eq!(error, StorageError::IncorrectRequest);
-    }
-
-    #[test]
-    fn test_process_request_echo() {
-        let request = RESP::Array(vec![
-            RESP::BulkString(String::from("ECHO")),
-            RESP::BulkString(String::from("42")),
-        ]);
-        let storage = Arc::new(Mutex::new(Storage::new()));
-
-        let output = process_request(request, storage).unwrap();
-
-        assert_eq!(output, RESP::BulkString(String::from("42")));
+        match server.storage {
+            Some(_) => (),
+            None => panic!(),
+        };
     }
 }

@@ -1,18 +1,25 @@
 // Completed till 3.2
 
+use crate::connection::ConnectionMessage;
+use crate::request::Request;
 use crate::resp::{RESP, bytes_to_resp};
-use crate::server::process_request;
 use crate::storage::Storage;
+use server_result::ServerMessage;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::AsyncReadExt,
     net::{TcpListener, TcpStream},
+    select,
+    sync::mpsc,
 };
 
+mod connection;
+mod request;
 mod resp;
 mod resp_result;
 mod server;
+mod server_result;
 mod set;
 mod storage;
 mod storage_result;
@@ -28,12 +35,14 @@ async fn main() -> std::io::Result<()> {
 
     let mut interval_timer = tokio::time::interval(Duration::from_millis(10));
 
+    let (server_sender, _) = mpsc::channel::<ConnectionMessage>(32);
+
     loop {
         tokio::select! {
             connection = listener.accept() => {
                 match connection {
                     Ok((stream, _)) => {
-                        tokio::spawn(handle_connection(stream, storage.clone()));
+                        tokio::spawn(handle_connection(stream, server_sender.clone()));
                     }
                     Err(e) => {
                         println!("Error: {}", e);
@@ -50,48 +59,55 @@ async fn main() -> std::io::Result<()> {
 }
 
 // The main entry point for valid TCP connections
-async fn handle_connection(mut stream: TcpStream, storage: Arc<Mutex<Storage>>) {
+// async fn handle_connection(mut stream: TcpStream, storage: Arc<Mutex<Storage>>) {
+async fn handle_connection(mut stream: TcpStream, server_sender: mpsc::Sender<ConnectionMessage>) {
     // Create a buffer to host incoming data.
     let mut buffer = [0; 512];
 
+    let (connection_sender, _) = mpsc::channel::<ServerMessage>(32);
+
     loop {
         // Read from the stream into the buffer
-        match stream.read(&mut buffer).await {
-            // If th stream returned some data,
-            // process the request.
-            Ok(size) if size != 0 => {
-                // Hardcoded response using a specific variant
-                let mut index: usize = 0;
+        // match stream.read(&mut buffer).await {
+        select! {
+            result = stream.read(&mut buffer) => {
+                match result {
+                    Ok(size) if size != 0 => {
+                        // Hardcoded response using a specific variant
+                        let mut index: usize = 0;
 
-                let request = match bytes_to_resp(&buffer[..size].to_vec(), &mut index) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        eprintln!("Error: {}", e);
-                        return;
+                        let resp = match bytes_to_resp(&buffer[..size].to_vec(), &mut index) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                eprintln!("Error: {}", e);
+                                return;
+                            }
+                        };
+
+                        let request = Request {
+                            value: resp,
+                            sender: connection_sender.clone(),
+                        };
+
+                        match server_sender.send(ConnectionMessage::Request(request)).await {
+                            Ok(()) => {},
+                            Err(e) => {
+                                eprintln!("Error sending request: {}", e);
+                                return;
+                            }
+                        }
                     }
-                };
-
-                let response = match process_request(request, storage.clone()) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        eprintln!("Error parsing command: {}", e);
-                        return;
+                    // If the stream returned no data
+                    // the connection has been closed
+                    Ok(_) => {
+                        println!("Connection closed");
+                        break;
                     }
-                };
-
-                if let Err(e) = stream.write_all(response.to_string().as_bytes()).await {
-                    eprintln!("Error writing to socket: {}", e);
+                    Err(e) => {
+                        println!("Error: {}", e);
+                        break;
+                    }
                 }
-            }
-            // If the stream returned no data
-            // the connection has been closed
-            Ok(_) => {
-                println!("Connection closed");
-                break;
-            }
-            Err(e) => {
-                println!("Error: {}", e);
-                break;
             }
         }
     }
